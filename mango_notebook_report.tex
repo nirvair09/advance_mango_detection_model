@@ -1,0 +1,478 @@
+\documentclass[12pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{setspace}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{float}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!60!black,
+    citecolor=blue!60!black,
+    urlcolor=blue!70!black
+}
+
+\setstretch{1.15}
+\setlist[itemize]{leftmargin=1.5em}
+\setlist[enumerate]{leftmargin=1.7em}
+
+\title{\textbf{Technical Report on the Notebook}\\[0.3em]
+\Large Mango Detection and Ripeness Classification}
+\author{Prepared from the saved project notebook}
+\date{23 April 2026}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+\newpage
+
+\section{Abstract}
+This report documents the saved Jupyter notebook \texttt{advance\_mango\_detection.ipynb}, which implements a two-stage computer vision pipeline for mango analysis. The notebook is designed to solve two related problems: first, detecting mangoes in an image; second, classifying the ripeness state of each detected mango as \texttt{raw}, \texttt{ripe}, or \texttt{overripe}. The implementation combines a YOLOv8 object detector for localization with an EfficientNetB0-based transfer-learning classifier for ripeness recognition \cite{ultralytics,kerasapp,efficientnet,tensorflowtransfer}. The notebook also adds practical safeguards such as confidence thresholds, margin-based cropping, uncertain-label handling, no-mango detection logic, model export, and a Streamlit deployment script \cite{streamlit}. This report explains what problem the notebook solves, why the problem matters, how the solution is built, what each notebook stage does, what data sources and libraries are used, what was actually executed in the saved notebook, and what limitations remain.
+
+\section{Project Context and Problem Statement}
+\subsection{What problem the notebook solves}
+The notebook addresses an agricultural and quality-assessment problem: automatically identifying mangoes in images and estimating their ripeness stage. This is useful in settings such as:
+\begin{itemize}
+    \item post-harvest sorting,
+    \item warehouse quality control,
+    \item retail inspection,
+    \item crop monitoring and decision support,
+    \item educational demonstrations of end-to-end computer vision pipelines.
+\end{itemize}
+
+The notebook does not treat the task as a single flat image-classification problem. Instead, it separates the workflow into:
+\begin{enumerate}
+    \item \textbf{detection}: find where mangoes are in the image;
+    \item \textbf{classification}: classify the ripeness of each detected fruit.
+\end{enumerate}
+
+This design is important because a single image may contain multiple mangoes, no mangoes at all, or mangoes at different ripeness stages. A detection-first pipeline is therefore more realistic than directly classifying the whole image.
+
+\subsection{Why this problem matters}
+Ripeness estimation influences harvesting, transport timing, market pricing, and waste reduction. A robust automated system can improve consistency and reduce human subjectivity. The notebook also acknowledges a key real-world challenge: many images may contain background clutter or no mango at all. For this reason, the author added negative-detection handling so the system can return \texttt{No mango detected} rather than forcing a wrong class.
+
+\section{Primary Source of This Report}
+The primary source for this report is the saved notebook artifact \texttt{advance\_mango\_detection.ipynb} found in the project workspace. All implementation details, variable names, thresholds, pipeline steps, model choices, and execution-status observations in this report were extracted directly from that notebook. External references are used only to identify the official sources of the datasets, frameworks, and model families cited by the notebook.
+
+\section{Notebook Audit Summary}
+\subsection{Structure}
+The saved notebook contains \textbf{36 cells} and is organized into \textbf{15 named sections}, beginning with environment setup and ending with a Streamlit deployment cell.
+
+\subsection{Execution state}
+The notebook metadata shows it was developed in \textbf{Google Colab} with a \textbf{Tesla T4 GPU}. However, the saved execution state is partial:
+\begin{itemize}
+    \item the package installation, dataset download, detector training, and detector inference cells were executed;
+    \item the later ripeness-classification, end-to-end test, model export, and Streamlit-writing cells are present in code but were \textbf{not executed} in the saved notebook.
+\end{itemize}
+
+This matters for honest reporting: the notebook contains a complete intended pipeline, but the saved notebook only records direct evidence for the \textbf{detection stage}, not the full trained classification stage.
+
+\subsection{Section-by-section audit}
+\begin{longtable}{p{0.09\textwidth} p{0.24\textwidth} p{0.57\textwidth}}
+\toprule
+\textbf{Step} & \textbf{Notebook Section} & \textbf{Purpose} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{Step} & \textbf{Notebook Section} & \textbf{Purpose} \\
+\midrule
+\endhead
+1 & Install libraries & Installs \texttt{ultralytics}, \texttt{roboflow}, \texttt{tensorflow}, \texttt{streamlit}, \texttt{opencv-python}, and \texttt{kaggle}. \\
+2 & Import libraries and settings & Defines paths, thresholds, class names, model file locations, and global constants. \\
+3 & Inference utilities & Implements reusable functions for detection, cropping, preprocessing, classification, and full image processing. \\
+4 & Roboflow dataset download & Downloads the detection dataset in YOLOv8 format. \\
+5 & Detector training & Fine-tunes \texttt{yolov8n.pt} for mango detection. \\
+6 & Test inference & Runs the trained detector on test images and saves visualizations. \\
+7 & Google Drive backup & Mounts Drive and copies training outputs for persistence in Colab. \\
+8 & Best-weight reload and review & Reloads best detector weights and previews outputs. \\
+9 & Crop generation & Uses the trained detector to create mango crops for downstream use. \\
+10 & Kaggle dataset download & Downloads the ripeness dataset archive from Kaggle. \\
+11 & TensorFlow data loading & Creates train and validation generators with a validation split. \\
+12 & Classifier construction and training & Builds an EfficientNetB0 transfer-learning classifier and trains it. \\
+13 & Full pipeline test & Runs detection plus ripeness prediction on a sample image. \\
+14 & Model export & Saves the detector weights and the classifier model. \\
+15 & Streamlit app generation & Writes an application script for interactive inference. \\
+\bottomrule
+\end{longtable}
+
+\section{System Objective and Functional Scope}
+The notebook aims to build an end-to-end mango-analysis system with the following functional capabilities:
+\begin{itemize}
+    \item detect one or more mangoes in an input image,
+    \item crop each detected mango,
+    \item classify ripeness for each crop,
+    \item reject low-confidence classification results using an \texttt{uncertain} label,
+    \item report when no mango is detected,
+    \item annotate the input image with boxes and confidence information,
+    \item export models for later use,
+    \item provide a deployable Streamlit interface.
+\end{itemize}
+
+\section{Technical Architecture}
+\subsection{Two-stage pipeline}
+The notebook uses a cascaded architecture:
+\begin{enumerate}
+    \item \textbf{Input image acquisition}
+    \item \textbf{YOLOv8 detection} to localize mangoes with bounding boxes
+    \item \textbf{Crop extraction} with a small margin around each box
+    \item \textbf{Image preprocessing} for the classifier
+    \item \textbf{EfficientNetB0 classification} of each crop
+    \item \textbf{Confidence filtering} to suppress uncertain ripeness predictions
+    \item \textbf{Annotation and summary generation}
+\end{enumerate}
+
+\subsection{Why this architecture is appropriate}
+This design is appropriate because:
+\begin{itemize}
+    \item detection and ripeness classification are different tasks,
+    \item object detection naturally handles multiple mangoes in one image,
+    \item crop-level classification is more focused than classifying the entire scene,
+    \item confidence-aware filtering improves practical reliability.
+\end{itemize}
+
+\subsection{Confidence logic}
+The notebook computes two forms of confidence:
+\begin{itemize}
+    \item \textbf{detection confidence}, returned by YOLO;
+    \item \textbf{classification confidence}, returned by the softmax output of the classifier.
+\end{itemize}
+
+It also computes a combined score:
+\[
+\text{combined confidence} = \text{detection confidence} \times \text{classification confidence}
+\]
+
+This combined score is used as a compact indicator of end-to-end confidence for each mango.
+
+\section{Detailed Implementation Analysis}
+\subsection{Imported libraries}
+The notebook imports:
+\begin{itemize}
+    \item \texttt{os} and \texttt{pathlib.Path} for filesystem handling,
+    \item \texttt{typing} for type hints,
+    \item \texttt{cv2} for image I/O and preprocessing,
+    \item \texttt{numpy} for tensor and array operations,
+    \item \texttt{tensorflow} for classifier definition and training,
+    \item \texttt{IPython.display} for in-notebook visualization,
+    \item \texttt{roboflow} for dataset download,
+    \item \texttt{tensorflow.keras.preprocessing} utilities for image loading and generators,
+    \item \texttt{ultralytics.YOLO} for detection training and inference.
+\end{itemize}
+
+\subsection{Global settings and constants}
+The project-level constants extracted from the notebook are shown in Table~\ref{tab:constants}.
+
+\begin{table}[H]
+\centering
+\caption{Key constants defined in the notebook}
+\label{tab:constants}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.34\textwidth} X}
+\toprule
+\textbf{Constant} & \textbf{Value / Meaning} \\
+\midrule
+\texttt{WORKSPACE\_NAME} & \texttt{pigrecipe} \\
+\texttt{PROJECT\_NAME} & \texttt{mango-7l7ug-napwv-razzf} \\
+\texttt{PROJECT\_VERSION} & \texttt{1} \\
+\texttt{DATASET\_DIR} & \texttt{mango-1} \\
+\texttt{YOLO\_DATA\_CONFIG} & \texttt{mango-1/data.yaml} \\
+\texttt{YOLO\_BASE\_WEIGHTS} & \texttt{yolov8n.pt} \\
+\texttt{YOLO\_RUNS\_DIR} & \texttt{/content/runs/detect} \\
+\texttt{YOLO\_BEST\_WEIGHTS} & \texttt{/content/runs/detect/train/weights/best.pt} \\
+\texttt{PREDICT\_DIR} & \texttt{/content/runs/detect/predict} \\
+\texttt{CROP\_OUTPUT\_DIR} & \texttt{/content/mango\_crops} \\
+\texttt{RIPENESS\_DATA\_DIR} & \texttt{/content/ripeness\_data} \\
+\texttt{CLASSIFIER\_MODEL\_PATH} & \texttt{/content/mango\_classifier.h5} \\
+\texttt{CLASS\_NAMES} & \{\texttt{raw}, \texttt{ripe}, \texttt{overripe}\} \\
+\texttt{DETECTION\_CONF\_THRESH} & \texttt{0.5} \\
+\texttt{CLASSIFICATION\_CONF\_THRESH} & \texttt{0.6} \\
+\texttt{CROP\_MARGIN} & \texttt{10} pixels \\
+\texttt{CLASSIFIER\_IMAGE\_SIZE} & \texttt{(224, 224)} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Inference utility functions}
+The notebook includes five core helper functions:
+\begin{enumerate}
+    \item \texttt{detect\_mangoes}: calls YOLO prediction, extracts bounding boxes and confidences, and keeps only boxes above the detection threshold;
+    \item \texttt{crop\_mango}: enlarges the box by a fixed margin and crops the fruit region;
+    \item \texttt{preprocess\_crop}: resizes the crop to \(224 \times 224\), scales pixel values to \([0,1]\), and adds a batch dimension;
+    \item \texttt{classify\_mango}: returns the ripeness label with softmax confidence, or \texttt{uncertain} if confidence is below 0.6;
+    \item \texttt{process\_image}: performs full end-to-end inference and generates a structured summary dictionary.
+\end{enumerate}
+
+These utilities are the most important engineering contribution of the notebook because they convert separate model components into a reusable inference pipeline.
+
+\section{Datasets and Data Sources}
+\subsection{Detection dataset}
+The detector training data is downloaded from Roboflow using the Python SDK and exported in YOLOv8 format \cite{roboflowsdk,roboflowdataset}. The notebook records:
+\begin{itemize}
+    \item workspace: \texttt{pigrecipe},
+    \item project: \texttt{mango-7l7ug-napwv-razzf},
+    \item version: \texttt{1},
+    \item local extracted location: \texttt{/content/mango-1}.
+\end{itemize}
+
+The saved notebook output also confirms that the extracted dataset contains:
+\begin{itemize}
+    \item \texttt{train},
+    \item \texttt{valid},
+    \item \texttt{test},
+    \item \texttt{data.yaml},
+    \item Roboflow README files.
+\end{itemize}
+
+During prediction, the model reports a single detection class named \texttt{Fresh Mango}. This indicates that the detector is trained as a one-class mango localizer, not as a ripeness classifier.
+
+\subsection{Ripeness classification dataset}
+The second dataset is downloaded from Kaggle using \cite{kaggledataset}:
+\begin{center}
+\texttt{kaggle datasets download -d srabon00/mango-ripening-stage-classification}
+\end{center}
+
+It is extracted into \texttt{/content/ripeness\_data}. The notebook uses directory-based loading, meaning the ripeness classes are expected to be organized into class-named subfolders. The project-level class names are explicitly defined as:
+\begin{center}
+\texttt{raw}, \texttt{ripe}, \texttt{overripe}
+\end{center}
+
+\subsection{Why two datasets are used}
+The notebook intentionally separates localization data from ripeness data:
+\begin{itemize}
+    \item the Roboflow dataset teaches the model where mangoes are;
+    \item the Kaggle dataset teaches the model how ripeness appearances differ.
+\end{itemize}
+
+This separation is reasonable when a single dataset does not provide both bounding boxes and ripeness labels at object level.
+
+\section{Training Configuration}
+\subsection{YOLOv8 detector}
+The detector configuration recorded in the notebook is \cite{ultralytics}:
+\begin{itemize}
+    \item base model: \texttt{yolov8n.pt},
+    \item training epochs: \texttt{50},
+    \item image size: \texttt{640},
+    \item batch size: \texttt{16},
+    \item platform: Google Colab with Tesla T4 GPU,
+    \item library family: Ultralytics YOLOv8.
+\end{itemize}
+
+The choice of \texttt{yolov8n} suggests a speed-oriented detector suitable for demonstration or lightweight deployment.
+
+\subsection{EfficientNetB0 classifier}
+The classification stage uses transfer learning \cite{kerasapp,efficientnet,tensorflowtransfer}:
+\begin{itemize}
+    \item base network: \texttt{EfficientNetB0},
+    \item pretrained weights: \texttt{imagenet},
+    \item input size: \(224 \times 224 \times 3\),
+    \item top removed: \texttt{include\_top=False},
+    \item backbone frozen for the initial pass,
+    \item added head: global average pooling \(\rightarrow\) dense(128, ReLU) \(\rightarrow\) dense(3, softmax),
+    \item optimizer: Adam,
+    \item loss: categorical cross-entropy,
+    \item metric: accuracy,
+    \item training epochs: \texttt{10}.
+\end{itemize}
+
+\subsection{Data loading for the classifier}
+TensorFlow's \texttt{ImageDataGenerator} is used with \cite{imagedatagenerator}:
+\begin{itemize}
+    \item pixel rescaling by \(\frac{1}{255}\),
+    \item validation split of \texttt{0.2},
+    \item target size \(224 \times 224\),
+    \item batch size \texttt{32}.
+\end{itemize}
+
+This creates a straightforward supervised learning setup with directory-based labels.
+
+\section{Execution Evidence from the Saved Notebook}
+\subsection{Observed completed stages}
+The notebook outputs confirm that the following stages were executed:
+\begin{itemize}
+    \item package installation,
+    \item Roboflow dataset download,
+    \item detector training invocation,
+    \item detector inference on the test split,
+    \item listing of dataset directories.
+\end{itemize}
+
+\subsection{Observed detector evidence}
+The saved output provides the following direct evidence:
+\begin{itemize}
+    \item the dataset was downloaded to \texttt{/content/mango-1};
+    \item the test split used by prediction contains \textbf{50 images}, as indicated by the output pattern \texttt{image 1/50};
+    \item prediction logs show detections such as \texttt{1 Fresh Mango}, \texttt{2 Fresh Mangos}, \texttt{6 Fresh Mangos};
+    \item many inference times shown in the saved output are around \textbf{5.8 ms} per image, with some larger values for different resolutions.
+\end{itemize}
+
+\subsection{Observed incomplete stages}
+The following code exists but was not executed in the saved notebook:
+\begin{itemize}
+    \item reloading the best weights for clean review,
+    \item displaying \texttt{results.png},
+    \item visual preview of saved prediction images,
+    \item crop generation,
+    \item Kaggle dataset extraction and classifier training,
+    \item full-pipeline sample test,
+    \item classifier prediction on a crop,
+    \item export of the classifier model,
+    \item writing of \texttt{app.py}.
+\end{itemize}
+
+Therefore, the notebook demonstrates \textbf{implementation completeness in code} but only \textbf{partial experimental completeness in saved outputs}.
+
+\section{Step-by-Step Operational Flow}
+The notebook's end-to-end workflow can be described as follows:
+\begin{enumerate}
+    \item Install all required Python packages in a fresh Colab environment.
+    \item Import libraries and define paths, thresholds, classes, and output locations.
+    \item Define reusable functions for detection, cropping, preprocessing, classification, and full-pipeline inference.
+    \item Download a YOLO-formatted mango detection dataset from Roboflow.
+    \item Inspect the dataset structure to verify expected folders.
+    \item Fine-tune YOLOv8n on the detection dataset.
+    \item Run detector inference on the test split and save visualized predictions.
+    \item Optionally copy training artifacts to Google Drive for persistence.
+    \item Reload the best trained detector weights for cleaner evaluation.
+    \item Use the detector to generate mango crops from training images.
+    \item Download a ripeness classification dataset from Kaggle.
+    \item Build TensorFlow training and validation generators.
+    \item Create an EfficientNetB0-based classifier and train it.
+    \item Run the full detection-plus-ripeness pipeline on a test image.
+    \item Save the best detector and trained classifier for later deployment.
+    \item Generate a Streamlit app that exposes the same inference logic in a user interface.
+\end{enumerate}
+
+\section{The Streamlit Deployment Layer}
+The final notebook cell writes a Streamlit application named \texttt{app.py} \cite{streamlit}. The application:
+\begin{itemize}
+    \item loads the YOLO detector and Keras classifier once per session using \texttt{st.cache\_resource},
+    \item accepts image uploads in \texttt{jpg}, \texttt{jpeg}, or \texttt{png} format,
+    \item decodes the image with OpenCV,
+    \item displays the uploaded image,
+    \item runs the full detection-plus-classification pipeline,
+    \item returns an error if no mango is detected,
+    \item otherwise displays the annotated image, mango counts, and average confidence values.
+\end{itemize}
+
+This deployment step is significant because it converts the notebook from an experimental workflow into a usable application prototype.
+
+\section{Design Strengths}
+The notebook shows several good engineering decisions:
+\begin{itemize}
+    \item \textbf{task decomposition}: detection and ripeness classification are handled separately;
+    \item \textbf{reusable helpers}: inference logic is not duplicated across cells;
+    \item \textbf{confidence thresholds}: helps reduce low-confidence errors;
+    \item \textbf{uncertain label}: avoids forcing fragile predictions;
+    \item \textbf{no-mango handling}: improves real-world behavior;
+    \item \textbf{margin-based cropping}: reduces overly tight crop errors;
+    \item \textbf{deployment awareness}: the notebook includes export and app code, not only training code.
+\end{itemize}
+
+\section{Limitations and Risks}
+\subsection{Partial execution record}
+The biggest reporting limitation is that the saved notebook does not include executed results for the classification stage. As a result, no classifier accuracy, confusion matrix, precision, recall, F1-score, or final end-to-end evaluation can be truthfully claimed from the saved artifact alone.
+
+\subsection{Hard-coded secret}
+The notebook contains a Roboflow API key directly in code. This is a security risk and should be replaced by an environment variable or secret-management workflow.
+
+\subsection{Cross-dataset domain gap}
+The pipeline combines a detection dataset from Roboflow and a ripeness dataset from Kaggle. This can introduce a domain shift because the lighting conditions, backgrounds, camera angles, and fruit presentation styles may differ between datasets.
+
+\subsection{Unclear label alignment}
+The detector output class shown in logs is \texttt{Fresh Mango}, while the classifier classes are \texttt{raw}, \texttt{ripe}, and \texttt{overripe}. This is not an error by itself, but it shows that detection and ripeness semantics come from different labeling systems and should be documented carefully.
+
+\subsection{Class imbalance risk}
+The ripeness classes may be imbalanced, which could reduce classifier reliability for minority ripeness stages unless augmentation, balancing, or weighted loss is added.
+
+\section{Improvement Plan Documented by the Notebook}
+The notebook already includes a useful negative-detection improvement plan. It recommends:
+\begin{itemize}
+    \item adding background-only images with no mango annotations,
+    \item including hard negatives such as other fruits, leaves, baskets, branches, and indoor objects,
+    \item leaving such images unlabeled so YOLO learns not to predict boxes,
+    \item re-evaluating precision on a mixed validation set containing mango and non-mango scenes.
+\end{itemize}
+
+This is a strong recommendation because reliable \texttt{No mango detected} behavior requires negative examples during training.
+
+\section{Recommendations for a More Complete Final Project}
+To convert this notebook into a stronger final-year or professional portfolio project, the following additions are recommended:
+\begin{enumerate}
+    \item fully execute the ripeness-training and end-to-end evaluation cells;
+    \item record classifier metrics such as accuracy, precision, recall, and confusion matrix;
+    \item report detector metrics such as precision, recall, mAP@0.5, and mAP@0.5:0.95 from the saved training outputs;
+    \item save key figures such as prediction samples and training curves into the repository;
+    \item replace the hard-coded API key with secure secrets handling;
+    \item add a reproducibility note covering environment versions and dataset versions;
+    \item evaluate the deployed Streamlit app on both positive and negative test images.
+\end{enumerate}
+
+\section{Conclusion}
+The notebook implements a sensible and practically motivated two-stage mango-analysis system. It is designed to answer the question: \emph{where are the mangoes in an image, and what is the ripeness state of each detected mango?} It does so by combining YOLOv8 object detection, crop extraction, EfficientNetB0 transfer learning, threshold-based decision rules, and Streamlit deployment. The strongest parts of the notebook are its modular inference utilities, its confidence-aware logic, and its end-to-end application mindset. The main gap is not in the design, but in the saved execution record: the detector stage was run, while the classifier and application stages remain defined in code but unexecuted in the saved notebook. Even with that limitation, the notebook represents a coherent foundation for an agricultural computer vision project and can be presented professionally once the missing execution evidence and evaluation metrics are added.
+
+\section{References}
+\begin{thebibliography}{99}
+
+\bibitem{localnotebook}
+Project notebook under analysis.
+\newblock \texttt{advance\_mango\_detection.ipynb}, local workspace artifact, accessed 23 April 2026.
+
+\bibitem{ultralytics}
+Ultralytics.
+\newblock \emph{Ultralytics YOLO Documentation}.
+\newblock Available at: \url{https://docs.ultralytics.com/}
+
+\bibitem{roboflowsdk}
+Roboflow.
+\newblock \emph{Roboflow Python Package and Dataset Workflow Documentation}.
+\newblock Available at: \url{https://docs.roboflow.com/developer/export-data}
+
+\bibitem{roboflowdataset}
+Roboflow Universe.
+\newblock \emph{Mango Detection Dataset: project \texttt{mango-7l7ug-napwv-razzf}}.
+\newblock Available at: \url{https://universe.roboflow.com/}
+
+\bibitem{kaggledataset}
+Kaggle.
+\newblock \emph{Mango Ripening Stage Classification Dataset by \texttt{srabon00}}.
+\newblock Available at: \url{https://www.kaggle.com/datasets/srabon00/mango-ripening-stage-classification}
+
+\bibitem{kerasapp}
+Keras.
+\newblock \emph{EfficientNetB0 and Keras Applications API}.
+\newblock Available at: \url{https://keras.io/api/applications/efficientnet/}
+
+\bibitem{efficientnet}
+Mingxing Tan and Quoc V. Le.
+\newblock \emph{EfficientNet: Rethinking Model Scaling for Convolutional Neural Networks}.
+\newblock In \emph{Proceedings of the 36th International Conference on Machine Learning}, 2019.
+\newblock Available at: \url{https://arxiv.org/abs/1905.11946}
+
+\bibitem{tensorflowtransfer}
+TensorFlow.
+\newblock \emph{Transfer Learning and Fine-Tuning Guide}.
+\newblock Available at: \url{https://www.tensorflow.org/tutorials/images/transfer_learning}
+
+\bibitem{imagedatagenerator}
+TensorFlow / Keras.
+\newblock \emph{ImageDataGenerator API Reference}.
+\newblock Available at: \url{https://www.tensorflow.org/api_docs/python/tf/keras/preprocessing/image/ImageDataGenerator}
+
+\bibitem{streamlit}
+Streamlit.
+\newblock \emph{Streamlit Documentation}.
+\newblock Available at: \url{https://docs.streamlit.io/}
+
+\end{thebibliography}
+
+\end{document}
